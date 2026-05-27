@@ -1,0 +1,6 @@
+{
+  "name": "Position Size Calculator",
+  "description": "Calculate exact lot and position sizes for Forex, Crypto, Metals, Oils, and Stocks using custom risk plans and smart AI-powered chart analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
