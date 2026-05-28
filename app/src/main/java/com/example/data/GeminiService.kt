@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 object GeminiService {
     private const val TAG = "GeminiService"
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
