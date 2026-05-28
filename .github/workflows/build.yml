@@ -9,6 +9,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,10 +45,6 @@ jobs:
             -keysize 2048 \
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
-          echo "Keystore created: $(ls -lh debug.keystore)"
-
-      - name: Create .env file
-        run: echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
 
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 9.3.1
