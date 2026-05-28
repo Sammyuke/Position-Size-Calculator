@@ -5,9 +5,6 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,30 +19,32 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
+      - name: Install Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 11076708
 
       - name: Install Android SDK 36
         run: |
-          yes | sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
+          yes | sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" 2>/dev/null || true
 
       - name: Decode debug keystore
         run: |
           if [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
-            echo "Keystore decoded successfully"
           fi
 
       - name: Create .env file
         run: echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.11.1
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace --info 2>&1 | tail -100
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
