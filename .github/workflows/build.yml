@@ -19,7 +19,7 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Install Gradle 8.11.1
+      - name: Install Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
@@ -31,11 +31,18 @@ jobs:
         run: |
           yes | sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" 2>/dev/null || true
 
-      - name: Decode debug keystore
+      - name: Generate debug keystore
         run: |
-          if [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-          fi
+          keytool -genkeypair \
+            -keystore debug.keystore \
+            -alias androiddebugkey \
+            -keypass android \
+            -storepass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          echo "Keystore created: $(ls -lh debug.keystore)"
 
       - name: Create .env file
         run: echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
