@@ -50,7 +50,7 @@ jobs:
         run: gradle wrapper --gradle-version 9.3.1
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --rerun-tasks
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
