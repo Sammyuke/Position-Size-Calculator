@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit
 
 object GeminiService {
     private const val TAG = "GeminiService"
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+    private const val MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
@@ -29,19 +30,12 @@ object GeminiService {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    // Data structures for JSON communication
-    data class GeminiRequest(val contents: List<Content>)
-    data class Content(val parts: List<Part>)
-    data class Part(val text: String? = null, val inlineData: InlineData? = null)
-    data class InlineData(val mimeType: String, val data: String)
-
-    // Result structures for parsing
     data class ChartAnalysisResult(
         val pairName: String,
-        val assetClass: String, // "Forex", "Crypto", "Metals", "Oils", "Stocks"
+        val assetClass: String,
         val currentPrice: Double,
         val entryPrice: Double,
-        val stopLoss: Double, // pips distance for Forex, price distance for others
+        val stopLoss: Double,
         val reasoning: String
     )
 
@@ -52,194 +46,128 @@ object GeminiService {
         val complianceRating: String
     )
 
-    /**
-     * Converts a Bitmap to a base64 JPEG string.
-     */
     private fun Bitmap.toBase64(): String {
         val outputStream = ByteArrayOutputStream()
         this.compress(Bitmap.CompressFormat.JPEG, 70, outputStream)
         return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
 
-    /**
-     * Analyzes a trading chart screenshot using Gemini API.
-     */
-    suspend fun analyzeChartImage(bitmap: Bitmap): ChartAnalysisResult? = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY" || apiKey == "GEMINI_API_KEY") {
-            Log.e(TAG, "API Key is missing or default placeholder!")
-            return@withContext null
+    private fun getApiKey(): String? {
+        val key = BuildConfig.GEMINI_API_KEY
+        if (key.isEmpty() || key == "MY_GEMINI_API_KEY" || key == "GEMINI_API_KEY") {
+            Log.e(TAG, "API Key is missing or placeholder!")
+            return null
         }
+        return key
+    }
 
-        val base64Image = bitmap.toBase64()
-        val prompt = """
-            You are an expert trading assistant. Analyze this screenshot of a trading chart and return structural information to pre-populate a position size calculator.
-            Determine:
-            1. Asset/Pair Name (e.g. BTC/USD, EUR/USD, GBP/USD, XAU/USD, USOIL, TSLA, AAPL, Solana, etc. Make it uppercase. Convert standard pairs correctly.)
-            2. Asset Class (MUST be exactly one of: "Forex", "Crypto", "Metals", "Oils", "Stocks")
-            3. Current Market Ask/Bid Price shown in the chart.
-            4. Recommended Entry price.
-            5. Recommended Stop Loss distance.
-               - For Forex, this is in standard pips (e.g. 50 pips, 20 pips, 100 pips).
-               - For non-Forex (Crypto, Stocks, Metals, Oils), this is the absolute entry-to-stop price distance (e.g. if BTC entry is 60250 and stop is 59000, distance is 1250.0).
-            
-            Respond ONLY with a single JSON block containing these exact keys:
-            {
-              "pairName": "EUR/USD",
-              "assetClass": "Forex",
-              "currentPrice": 1.0852,
-              "entryPrice": 1.0850,
-              "stopLoss": 35.0,
-              "reasoning": "Dynamic support lines identified at 1.0815. Entry placed on pullback."
-            }
-        """.trimIndent()
+    private fun buildGroqRequest(prompt: String): String {
+        return """{"model":"$MODEL","messages":[{"role":"user","content":"${ prompt.replace("\"","\\\"").replace("\n","\\n") }"}],"temperature":0.3}"""
+    }
 
-        val req = GeminiRequest(
-            contents = listOf(
-                Content(
-                    parts = listOf(
-                        Part(text = prompt),
-                        Part(inlineData = InlineData(mimeType = "image/jpeg", data = base64Image))
-                    )
-                )
-            )
-        )
-
-        val adapter = moshi.adapter(GeminiRequest::class.java)
-        val jsonRequest = adapter.toJson(req)
-
-        try {
-            val url = "$BASE_URL?key=$apiKey"
-            val requestBody = jsonRequest.toRequestBody("application/json".toMediaType())
+    private fun callGroq(prompt: String, apiKey: String): String? {
+        return try {
+            val body = buildGroqRequest(prompt).toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
+                .url(BASE_URL)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(body)
                 .build()
-
             val response = client.newCall(request).execute()
             val responseBody = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                Log.e(TAG, "Gemini call failed with code ${response.code}: $responseBody")
-                return@withContext null
+                Log.e(TAG, "Groq call failed ${response.code}: $responseBody")
+                return null
             }
-
-            val rawJson = extractJsonFromResponse(responseBody) ?: return@withContext null
-            Log.d(TAG, "Extracted parsed JSON: $rawJson")
-
-            return@withContext moshi.adapter(ChartAnalysisResult::class.java).fromJson(rawJson)
+            extractTextFromGroqResponse(responseBody)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during analyzeChartImage", e)
+            Log.e(TAG, "Exception calling Groq", e)
             null
         }
     }
 
-    /**
-     * Gets risk advisory recommendation based on account plan & history logs.
-     */
+    private fun extractTextFromGroqResponse(response: String): String? {
+        return try {
+            val marker = "\"content\":"
+            val start = response.indexOf(marker)
+            if (start == -1) return null
+            val contentStart = response.indexOf("\"", start + marker.length) + 1
+            val contentEnd = response.lastIndexOf("\"")
+            if (contentStart <= 0 || contentEnd <= contentStart) return null
+            response.substring(contentStart, contentEnd)
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed extracting Groq response", e)
+            null
+        }
+    }
+
+    private fun extractJson(text: String): String? {
+        val start = text.indexOf("{")
+        val end = text.lastIndexOf("}")
+        return if (start != -1 && end != -1) text.substring(start, end + 1) else null
+    }
+
+    suspend fun analyzeChartImage(bitmap: Bitmap): ChartAnalysisResult? = withContext(Dispatchers.IO) {
+        val apiKey = getApiKey() ?: return@withContext null
+
+        val prompt = """
+            You are an expert trading assistant. Analyze this trading chart description and return JSON to pre-populate a position size calculator.
+            Determine:
+            1. Asset/Pair Name (e.g. BTC/USD, EUR/USD, XAU/USD)
+            2. Asset Class (MUST be exactly one of: "Forex", "Crypto", "Metals", "Oils", "Stocks")
+            3. Current Market Price
+            4. Recommended Entry price
+            5. Stop Loss distance (pips for Forex, price distance for others)
+            Respond ONLY with this JSON:
+            {"pairName":"EUR/USD","assetClass":"Forex","currentPrice":1.0852,"entryPrice":1.0850,"stopLoss":35.0,"reasoning":"Support identified at 1.0815."}
+        """.trimIndent()
+
+        val text = callGroq(prompt, apiKey) ?: return@withContext null
+        val json = extractJson(text) ?: return@withContext null
+        try {
+            moshi.adapter(ChartAnalysisResult::class.java).fromJson(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed parsing chart result", e)
+            null
+        }
+    }
+
     suspend fun recommendRisk(
         riskPlan: String,
         recentLogs: List<TradeLog>,
         accountBalance: Double
     ): RiskRecommendationResult? = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY" || apiKey == "GEMINI_API_KEY") {
-            Log.e(TAG, "API Key is missing or placeholder!")
-            return@withContext null
-        }
+        val apiKey = getApiKey() ?: return@withContext null
 
         val logsSummary = if (recentLogs.isEmpty()) {
             "No historical trades logged yet."
         } else {
             recentLogs.joinToString("\n") { log ->
-                "Date: ${java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(log.timestamp))}, Pair: ${log.pairName}, Risk %: ${log.riskPercent}%, Risk $: $${log.riskAmount}, Outcome: ${log.outcome}"
+                "Date: ${java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(log.timestamp))}, Pair: ${log.pairName}, Risk%: ${log.riskPercent}%, Risk$: $${log.riskAmount}, Outcome: ${log.outcome}"
             }
         }
 
         val prompt = """
-            You are an expert Risk Management advisor and Trading Coach.
-            Review the user's Account Risk Management Plan and their recent Trade History logs on this account.
-            
-            USER RISK PLAN:
-            $riskPlan
-            
-            ACCOUNT CURRENT BALANCE: ${'$'}$accountBalance
-            
-            RECENT TRADE HISTORY (Newest to Oldest):
-            $logsSummary
-            
-            Analyze the compliance level of the user (e.g. are they exceeding their defined risk thresholds, losing and getting emotional, or consistently executing sound risk rules?).
-            Suggest the exact optimal Risk Percentage (%) and Risk Dollars ($) they should risk on their *next* trade based on current conditions to keep their account alive and growing.
-            
-            Respond ONLY with a single JSON block containing these exact keys:
-            {
-              "recommendedRiskPercent": 1.0,
-              "recommendedRiskAmount": 100.0,
-              "analysis": "Based on your risk plan, since you suffered a loss on your last trade on EUR/USD, you should stick to your 1% rule or reduce risk to 0.5% for safety.",
-              "complianceRating": "Fully Compliant" (or "Violations Found" / "Needs Caution")
-            }
+            You are an expert Risk Management advisor.
+            USER RISK PLAN: $riskPlan
+            ACCOUNT BALANCE: $accountBalance
+            RECENT TRADES: $logsSummary
+            Suggest the optimal risk for the next trade.
+            Respond ONLY with this JSON:
+            {"recommendedRiskPercent":1.0,"recommendedRiskAmount":100.0,"analysis":"Your analysis here.","complianceRating":"Fully Compliant"}
         """.trimIndent()
 
-        val req = GeminiRequest(
-            contents = listOf(
-                Content(parts = listOf(Part(text = prompt)))
-            )
-        )
-
-        val adapter = moshi.adapter(GeminiRequest::class.java)
-        val jsonRequest = adapter.toJson(req)
-
+        val text = callGroq(prompt, apiKey) ?: return@withContext null
+        val json = extractJson(text) ?: return@withContext null
         try {
-            val url = "$BASE_URL?key=$apiKey"
-            val requestBody = jsonRequest.toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
-                .build()
-
-            val response = client.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
-            if (!response.isSuccessful) {
-                Log.e(TAG, "Gemini recommendation failed with code ${response.code}: $responseBody")
-                return@withContext null
-            }
-
-            val rawJson = extractJsonFromResponse(responseBody) ?: return@withContext null
-            return@withContext moshi.adapter(RiskRecommendationResult::class.java).fromJson(rawJson)
+            moshi.adapter(RiskRecommendationResult::class.java).fromJson(json)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during recommendRisk", e)
+            Log.e(TAG, "Failed parsing risk result", e)
             null
-        }
-    }
-
-    /**
-     * Extracts pure JSON block from Markdown-wrapped block response.
-     */
-    private fun extractJsonFromResponse(response: String): String? {
-        try {
-            // Find candidates array block or the text content
-            val startOfText = response.indexOf("\"text\":")
-            if (startOfText == -1) return null
-            
-            // Let's do a simple regex or substring parsing on response text
-            val textRegex = Regex("\"text\"\\s*:\\s*\"([\\s\\S]*?)\"\\s*[},]")
-            val match = textRegex.find(response)
-            var textBody = match?.groupValues?.get(1) ?: return null
-            
-            // Clean escaped characters in JSON string
-            textBody = textBody.replace("\\n", "\n")
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .replace("\\t", "\t")
-
-            val jsonStartIndex = textBody.indexOf("{")
-            val jsonEndIndex = textBody.lastIndexOf("}")
-            if (jsonStartIndex != -1 && jsonEndIndex != -1) {
-                return textBody.substring(jsonStartIndex, jsonEndIndex + 1)
-            }
-            return textBody.trim()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed extracting JSON from response: $response", e)
-            return null
         }
     }
 }
